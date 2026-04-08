@@ -1,123 +1,207 @@
 <#
 .SYNOPSIS
-    Creates a Windows toast notification with customizable options and using BurntToast module.
-.DESCRIPTION
-    This script creates a Windows toast notification with a customizable image, title, message, 
-    and options for snooze and reminder functionality.
-.PARAMETER Title
-    The title text for the notification.
-.PARAMETER Message
-    The message text for the notification.
-.PARAMETER ImagePath
-    The path to the image to be displayed. Defaults to 'C:\ws\emacs.png'.
-.PARAMETER EnableSnooze
-    Whether to enable snooze functionality. Default is $true.
-.PARAMETER ReminderMode
-    Whether to use reminder mode for the notification. Default is $true.
-.PARAMETER AppId
-    Specify appid (see Get-StartApps)
-.EXAMPLE
-    .\toast.ps1 "Hello World" "This is a test notification"
-.EXAMPLE
-    .\toast.ps1 -Title "Meeting" -Message "Team meeting in 5 minutes" -EnableSnooze $true
+    Installs BurntToast from the latest official GitHub Release (Stable & Lightweight).
 #>
 
 param (
-    [Parameter(Mandatory=$true, Position=0)]
-    [string]$Title,
-    
-    [Parameter(Mandatory=$true, Position=1)]
-    [string]$Message,
-    
-    [Parameter(Mandatory=$false)]
-    [string]$ImagePath = "C:\ws\emacs.png",
-    
-    [Parameter(Mandatory=$false)]
-    [bool]$EnableSnooze = $true,
-    
-    [Parameter(Mandatory=$false)]
-    [bool]$ReminderMode = $true,
-
-    [Parameter(Mandatory=$false)]
-    [string]$AppID = "Microsoft.Windows.PowerShell"
+    [Parameter(Mandatory=$true)][string]$Title,
+    [Parameter(Mandatory=$true)][string]$Message,
+    [Parameter(Mandatory=$false)][string]$ImagePath = "C:\ws\emacs.png",
+    [Parameter(Mandatory=$false)][string]$AppID = "Microsoft.Windows.PowerShell"
 )
 
-function Send-BTToast {
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$ImagePath,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$Title,
-        
-        [Parameter(Mandatory=$true)]
-        [string]$Message,
-        
-        [Parameter(Mandatory=$false)]
-        [bool]$EnableSnooze = $true,
-        
-        [Parameter(Mandatory=$false)]
-        [bool]$ReminderMode = $true,
-
-        [Parameter(Mandatory=$false)]
-        [string]$AppID = "Microsoft.Windows.PowerShell"
-    )
-    
-    # Create the image for the notification
-    $icon = New-BTImage -Source $ImagePath -AppLogoOverride
-    
-    # Create the text elements
-    $text1 = New-BTText -Text $Title
-    $text2 = New-BTText -Text $Message
-    
-    # Create binding with the elements
-    $binding = New-BTBinding -Children @($text1, $text2) -AppLogoOverride $icon
-    
-    # Create the visual element
-    $visual = New-BTVisual -BindingGeneric $binding
-    
-    # Define action variable
-    $action = $null
-    
-    # Check if snooze is enabled
-    if ($EnableSnooze) {
-        # Create snooze options
-        $5min = New-BTSelectionBoxItem -Id 5 -Content '5 minutes'
-        $10min = New-BTSelectionBoxItem -Id 10 -Content '10 minutes'
-        $1hour = New-BTSelectionBoxItem -Id 60 -Content '1 heure'
-        $4hours = New-BTSelectionBoxItem -Id 240 -Content '4 heures'
-        $items = $5min, $10min, $1hour, $4hours
-        
-        # Create selection box for snooze times
-        $selectionBox = New-BTInput -Id 'SnoozeTime' -DefaultSelectionBoxItemId 10 -Items $items
-        
-        # Create buttons
-        $snoozeButton = New-BTButton -Snooze -Id 'SnoozeTime' -Content "Rapelle-moi encore"
-        $dismissButton = New-BTButton -Dismiss -Content "Ok"
-        
-        # Create action with snooze functionality
-        $action = New-BTAction -Buttons $snoozeButton,$dismissButton -Inputs $selectionBox
+function Show-FallbackMessageBox {
+    param([string]$T, [string]$M)
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show($M, $T, 'OK', 'Information')
+    } catch {
+        Write-Host "CRITICAL: MessageBox failed. $_"
     }
-    else {
-        # Create dismiss button only
-        $dismissButton = New-BTButton -Dismiss -Content "Ok"
-        
-        # Create action without snooze functionality
-        $action = New-BTAction -Buttons $dismissButton
-    }
-    
-    # Set scenario based on ReminderMode parameter
-    $scenario = if ($ReminderMode) { "Reminder" } else { "Default" }
-    
-    # Create the content
-    $content = New-BTContent -Visual $visual -Actions $action -Duration Long -Scenario $scenario
-
-    # A little bit hardcore but...
-    New-BTAppId -AppId $AppID
-    
-    # Submit the notification
-    Submit-BTNotification -Content $content -AppID $AppID
 }
 
-# Call the function with provided parameters
-Send-BTToast -ImagePath $ImagePath -Title $Title -Message $Message -EnableSnooze $EnableSnooze -ReminderMode $ReminderMode -AppID $AppID
+function Install-From-Latest-Release {
+    $tempZip = $null
+    $extractPath = $null
+    try {
+        Write-Host ">>> Fetching latest release info from GitHub API..."
+        $apiUrl = "https://api.github.com/repos/Windos/BurntToast/releases/latest"
+        $releaseData = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -ErrorAction Stop
+        $version = $releaseData.tag_name
+        Write-Host "Latest Release: $version"
+
+        # Determine module path (PS5 vs PS7+)
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            $moduleBase = "$HOME\Documents\PowerShell\Modules\BurntToast"
+        } else {
+            $moduleBase = "$HOME\Documents\WindowsPowerShell\Modules\BurntToast"
+        }
+
+        if (Test-Path $moduleBase) { Remove-Item -Recurse -Force $moduleBase }
+        New-Item -ItemType Directory -Path $moduleBase -Force | Out-Null
+
+        $tempZip   = "$env:TEMP\BurntToast_$version.zip"
+        $extractPath = "$env:TEMP\BurntToast_Extracted_$PID"
+
+        # Prefer a .zip release asset; fall back to zipball (source archive)
+        $zipAsset = $releaseData.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
+        if ($zipAsset) {
+            Write-Host "Downloading release asset: $($zipAsset.name)"
+            Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
+        } else {
+            Write-Host "No zip asset found, downloading source zipball: $($releaseData.zipball_url)"
+            Invoke-WebRequest -Uri $releaseData.zipball_url -OutFile $tempZip -UseBasicParsing -ErrorAction Stop
+        }
+
+        Write-Host "Extracting..."
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        if (Test-Path $extractPath) { Remove-Item -Recurse -Force $extractPath }
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $extractPath)
+
+        # Resolve the actual module source directory.
+        # - Proper zip asset: flat or one wrapper folder containing .psm1
+        # - GitHub zipball: wrapper folder (Windos-BurntToast-<hash>/) with a BurntToast/ subfolder inside
+        $sourceDir = $null
+        $topFolders = @(Get-ChildItem -Path $extractPath -Directory)
+
+        if ($topFolders.Count -eq 1) {
+            $inner = Join-Path $topFolders[0].FullName "BurntToast"
+            if (Test-Path $inner) {
+                $sourceDir = $inner   # zipball layout
+            } elseif (Get-ChildItem -Path $topFolders[0].FullName -Filter "*.psm1") {
+                $sourceDir = $topFolders[0].FullName  # single-wrapper asset
+            }
+        }
+        if (-not $sourceDir -and (Get-ChildItem -Path $extractPath -Filter "*.psm1")) {
+            $sourceDir = $extractPath  # flat layout
+        }
+        if (-not $sourceDir) { throw "Could not locate BurntToast module files in the archive." }
+
+        Write-Host "Copying from: $sourceDir"
+        Get-ChildItem -Path $sourceDir | Copy-Item -Destination $moduleBase -Force -Recurse
+
+        # Ensure .psm1 and .psd1 are named BurntToast.* (required by PowerShell module loader)
+        foreach ($ext in "psm1","psd1") {
+            $f = Get-ChildItem -Path $moduleBase -Filter "*.$ext" | Select-Object -First 1
+            if ($f -and $f.BaseName -ne "BurntToast") {
+                Write-Host "Renaming $($f.Name) -> BurntToast.$ext"
+                Rename-Item -Path $f.FullName -NewName "BurntToast.$ext" -Force
+            }
+        }
+        if (-not (Get-ChildItem -Path $moduleBase -Filter "*.psm1")) { throw "No .psm1 found after extraction." }
+
+        Write-Host ">>> Installation Successful: $moduleBase (Version $version)"
+        return $true
+    }
+    catch {
+        Write-Error "Release installation failed: $_"
+        return $false
+    }
+    finally {
+        if ($tempZip    -and (Test-Path $tempZip))    { Remove-Item $tempZip    -Force -ErrorAction SilentlyContinue }
+        if ($extractPath -and (Test-Path $extractPath)) { Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Install-Via-Gallery {
+    try {
+        Write-Host ">>> Trying Install-Module from PSGallery (CurrentUser)..."
+
+        # PS5 defaults to TLS 1.0 which PSGallery rejects
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+        # Ensure NuGet provider is present without interactive prompt
+        if (-not (Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue | Where-Object { $_.Version -ge [version]"2.8.5.201" })) {
+            Write-Host "Installing NuGet provider..."
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force -ErrorAction Stop | Out-Null
+        }
+
+        # Trust PSGallery for this session so no confirmation prompt blocks us
+        if ((Get-PSRepository -Name PSGallery).InstallationPolicy -ne 'Trusted') {
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+        }
+
+        Install-Module -Name BurntToast -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Write-Host ">>> PSGallery install succeeded."
+        return $true
+    }
+    catch {
+        Write-Warning "PSGallery install failed: $_"
+        return $false
+    }
+}
+
+# --- MAIN LOGIC ---
+try {
+    $moduleName = "BurntToast"
+    $module = Get-Module -ListAvailable -Name $moduleName
+
+    if (-not $module) {
+        Write-Warning "Module not found. Attempting install..."
+        $success = Install-Via-Gallery
+        if (-not $success) {
+            Write-Warning "Falling back to GitHub Release zip..."
+            $success = Install-From-Latest-Release
+        }
+        
+        if (-not $success) {
+            Show-FallbackMessageBox -T "Install Error" -M "Failed to install BurntToast from GitHub Release."
+            exit 0
+        }
+        
+        # Refresh cache modules
+        $module = Get-Module -ListAvailable -Name $moduleName
+        
+        # If Get-Module still can't find it, add our install path to the search path
+        if (-not $module) {
+            if ($PSVersionTable.PSVersion.Major -ge 6) { $modParent = "$HOME\Documents\PowerShell\Modules" }
+            else { $modParent = "$HOME\Documents\WindowsPowerShell\Modules" }
+
+            if ($env:PSModulePath -notlike "*$modParent*") {
+                $env:PSModulePath = "$modParent;$env:PSModulePath"
+            }
+            $module = Get-Module -ListAvailable -Name BurntToast
+        }
+
+        if (-not $module) { throw "Module still not found after installation." }
+    }
+
+    Write-Host "Importing module..."
+    Import-Module BurntToast -Force -ErrorAction Stop
+
+    # Verify at least one known command loaded
+    $hasOldApi = [bool](Get-Command New-BTText -ErrorAction SilentlyContinue)
+    $hasNewApi = [bool](Get-Command New-BurntToastNotification -ErrorAction SilentlyContinue)
+    if (-not $hasOldApi -and -not $hasNewApi) { throw "BurntToast loaded but no usable commands found - installation may be corrupt." }
+
+    Write-Host "Sending notification (API: $(if ($hasNewApi) {'1.x'} else {'0.x'}))..."
+
+    if ($hasNewApi) {
+        # BurntToast 1.x API
+        $cmdMeta = Get-Command New-BurntToastNotification
+        $params  = @{ Text = @($Title, $Message) }
+        if ($cmdMeta.Parameters.ContainsKey('AppId'))   { $params['AppId']   = $AppID }
+        if ($cmdMeta.Parameters.ContainsKey('AppID'))   { $params['AppID']   = $AppID }
+        if ((Test-Path $ImagePath) -and $cmdMeta.Parameters.ContainsKey('AppLogo')) { $params['AppLogo'] = $ImagePath }
+        New-BurntToastNotification @params -ErrorAction Stop
+    } else {
+        # BurntToast 0.x builder API
+        $icon = $null
+        if (Test-Path $ImagePath) {
+            try { $icon = New-BTImage -Source $ImagePath -AppLogoOverride -ErrorAction Stop }
+            catch { Write-Warning "Image issue: $_" }
+        }
+        $content = New-BTContent -Visual (New-BTVisual -BindingGeneric (New-BTBinding -Children @(
+            (New-BTText -Text $Title),
+            (New-BTText -Text $Message)
+        ) -AppLogoOverride $icon)) -Actions (New-BTAction -Buttons (New-BTButton -Dismiss -Content "Ok")) -Duration Long
+        Submit-BTNotification -Content $content -AppID $AppID -ErrorAction Stop
+    }
+
+    Write-Host "SUCCESS: Toast displayed."
+}
+catch {
+    Write-Error "Execution failed: $_"
+    Show-FallbackMessageBox -T $Title -M $Message
+}
+exit 0
